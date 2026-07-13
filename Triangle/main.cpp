@@ -1,12 +1,10 @@
 #include <cstdlib>
 #include <stdexcept>
 #include <string>
-#include <string_view>
-#include <fstream>
-#include <utility>
 
-#include <GLFW/glfw3.h>
-#include <GLFW/glfw3native.h>
+#include <GlfwWindow.hpp>
+#include <Utility.hpp>
+
 
 #include <wrl/client.h>
 
@@ -32,34 +30,6 @@ inline void ThrowIfFailed(HRESULT hr)
     {
         throw std::runtime_error("Failed here!");
     }
-}
-
-std::pair<GLFWwindow*, HWND> create_widget(int width, int height, const char* title)
-{
-    if (!glfwInit())
-    {
-        throw std::runtime_error("Failed to initialize GLFW");
-    }
-
-    glfwWindowHint(GLFW_CLIENT_API, GLFW_NO_API);
-    glfwWindowHint(GLFW_RESIZABLE, GLFW_FALSE);
-
-    auto window = glfwCreateWindow(width, height, title, nullptr, nullptr);
-    if (window == nullptr)
-    {
-        glfwTerminate();
-        throw std::runtime_error("Failed to create GLFW window");
-    }
-
-    auto h = glfwGetWin32Window(window);
-    if (h == nullptr)
-    {
-        glfwDestroyWindow(window);
-        glfwTerminate();
-        window = nullptr;
-        throw std::runtime_error("Failed to get Win32 HWND from GLFW window");
-    }
-    return {window,h};
 }
 
 struct DXDevice
@@ -103,27 +73,6 @@ struct DXDevice
         }
 
         m_frameIndex = m_swapChain->GetCurrentBackBufferIndex();
-    }
-
-    std::vector<UINT8> ReadCSO(std::string_view filename)
-    {
-        std::ifstream file(filename.data(), std::ios::binary | std::ios::ate);
-        if (!file.is_open())
-        {
-            throw std::runtime_error("Failed to open file: " + std::string(filename));
-        }
-        const auto file_size = file.tellg();
-        if (file_size <= 0)
-        {
-            throw std::runtime_error("File is empty: " + std::string(filename));
-        }
-        std::vector<UINT8> buffer(static_cast<size_t>(file_size));
-        file.seekg(0, std::ios::beg);
-        if (!file.read(reinterpret_cast<char*>(buffer.data()), file_size))
-        {
-            throw std::runtime_error("Failed to read file: " + std::string(filename));
-        }
-        return buffer;
     }
 
     DXDevice(HWND h)
@@ -431,19 +380,13 @@ struct DXDevice
 
 int main()
 {
-    auto [window, h] = create_widget(WIDTH, HEIGHT, "test");
-
-
-    DXDevice device{h};
-
-
-    while (!glfwWindowShouldClose(window))
+    GlfwWindow window{WIDTH, HEIGHT, "test"};
+    DXDevice device{ window._hwnd };
+    while (!glfwWindowShouldClose(window._window))
     {
         device.render();
         glfwPollEvents();
     }
-    glfwDestroyWindow(window);
-    glfwTerminate();
     return 0;
 }
 
