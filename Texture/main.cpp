@@ -64,8 +64,6 @@ std::pair<GLFWwindow*, HWND> create_widget(int width, int height, const char* ti
 
 struct DXDevice
 {
-
-
     // Pipeline objects.
     CD3DX12_VIEWPORT m_viewport;
     CD3DX12_RECT m_scissorRect;
@@ -79,7 +77,6 @@ struct DXDevice
     ComPtr<ID3D12PipelineState> m_pipelineState;
     ComPtr<ID3D12GraphicsCommandList> m_commandList;
     UINT m_rtvDescriptorSize;
-
     UINT m_frameIndex;
     
     // App resources.
