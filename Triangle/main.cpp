@@ -161,9 +161,9 @@ ComPtr<IDXGISwapChain3> create_swap_chain(HWND h, ComPtr<IDXGIFactory4> factory,
     return ret_sc3;
 }
 
-struct DXDevice
+struct D3D12Context
 {
-    // Pipeline objects.
+    // gloable context
     CD3DX12_VIEWPORT m_viewport;
     CD3DX12_RECT m_scissorRect;
     ComPtr<IDXGISwapChain3> m_swapChain;
@@ -172,8 +172,10 @@ struct DXDevice
     ComPtr<ID3D12Resource> m_renderTargets[FrameCount];
     ComPtr<ID3D12CommandAllocator> m_commandAllocator;
     ComPtr<ID3D12CommandQueue> m_commandQueue;
-    ComPtr<ID3D12RootSignature> m_rootSignature;
+    // memory
     ComPtr<ID3D12DescriptorHeap> m_rtvHeap;
+    // pipeline
+    ComPtr<ID3D12RootSignature> m_rootSignature;
     ComPtr<ID3D12PipelineState> m_pipelineState;
     ComPtr<ID3D12GraphicsCommandList> m_commandList;
     UINT m_rtvDescriptorSize;
@@ -205,7 +207,7 @@ struct DXDevice
         m_frameIndex = m_swapChain->GetCurrentBackBufferIndex();
     }
 
-    DXDevice(HWND h)
+    D3D12Context(HWND h)
     {
         UINT dxgiFactoryFlags = 0;
 #if defined(_DEBUG)
@@ -232,6 +234,7 @@ struct DXDevice
         rtvHeapDesc.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_NONE;
         // rtvHeapDesc.NodeMask = 0;
         ThrowIfFailed(m_device->CreateDescriptorHeap(&rtvHeapDesc, IID_PPV_ARGS(&m_rtvHeap)));
+        
         m_rtvDescriptorSize = m_device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_RTV);
 
         // frame resource
@@ -405,7 +408,7 @@ struct DXDevice
 int main()
 {
     GlfwWindow window{WIDTH, HEIGHT, "test"};
-    DXDevice device{ window._hwnd };
+    D3D12Context device{ window._hwnd };
     while (!glfwWindowShouldClose(window._window))
     {
         device.render();
