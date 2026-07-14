@@ -32,6 +32,135 @@ inline void ThrowIfFailed(HRESULT hr)
     }
 }
 
+void enable_debug_layer(UINT& flag)
+{
+    ComPtr<ID3D12Debug> debug_controller;
+    if (FAILED(D3D12GetDebugInterface(IID_PPV_ARGS(&debug_controller)))) return;
+    debug_controller->EnableDebugLayer();
+    flag |= DXGI_CREATE_FACTORY_DEBUG;
+}
+
+ComPtr<IDXGIFactory4> create_factory(UINT flag)
+{
+    ComPtr<IDXGIFactory4> factory;
+    ThrowIfFailed(CreateDXGIFactory2(flag, IID_PPV_ARGS(&factory)));
+    return factory;
+}
+
+void GetHardwareAdapter(
+    IDXGIFactory1 *pFactory,
+    IDXGIAdapter1 **ppAdapter,
+    bool requestHighPerformanceAdapter = true)
+        {
+    *ppAdapter = nullptr;
+    ComPtr<IDXGIAdapter1> adapter;
+    ComPtr<IDXGIFactory6> factory6;
+    if (SUCCEEDED(pFactory->QueryInterface(IID_PPV_ARGS(&factory6))))
+    {
+        for (
+            UINT adapterIndex = 0;
+            SUCCEEDED(factory6->EnumAdapterByGpuPreference(
+                adapterIndex,
+                requestHighPerformanceAdapter == true ? DXGI_GPU_PREFERENCE_HIGH_PERFORMANCE :
+                DXGI_GPU_PREFERENCE_UNSPECIFIED,
+                IID_PPV_ARGS(&adapter)));
+            ++adapterIndex)
+        {
+            DXGI_ADAPTER_DESC1 desc;
+            adapter->GetDesc1(&desc);
+            if (desc.Flags & DXGI_ADAPTER_FLAG_SOFTWARE)
+            {
+                // Don't select the Basic Render Driver adapter.
+                // If you want a software adapter, pass in "/warp" on the command line.
+                continue;
+            }
+            // Check to see whether the adapter supports Direct3D 12, but don't create the
+            // actual device yet.
+            if (SUCCEEDED(D3D12CreateDevice(adapter.Get(), D3D_FEATURE_LEVEL_11_0, _uuidof(ID3D12Device), nullptr)))
+            {
+                break;
+            }
+        }
+    }
+    if (adapter.Get() == nullptr)
+    {
+        for (UINT adapterIndex = 0; SUCCEEDED(pFactory->EnumAdapters1(adapterIndex, &adapter)); ++adapterIndex)
+        {
+            DXGI_ADAPTER_DESC1 desc;
+            adapter->GetDesc1(&desc);
+            if (desc.Flags & DXGI_ADAPTER_FLAG_SOFTWARE)
+            {
+                // Don't select the Basic Render Driver adapter.
+                // If you want a software adapter, pass in "/warp" on the command line.
+                continue;
+            }
+            // Check to see whether the adapter supports Direct3D 12, but don't create the
+            // actual device yet.
+            if (SUCCEEDED(D3D12CreateDevice(adapter.Get(), D3D_FEATURE_LEVEL_11_0, _uuidof(ID3D12Device), nullptr)))
+            {
+                break;
+            }
+        }
+    }
+    *ppAdapter = adapter.Detach();
+}
+
+ComPtr<ID3D12Device> create_device(UINT flag, ComPtr<IDXGIFactory4> factory)
+{
+    
+    ComPtr<ID3D12Device> device;
+    ThrowIfFailed(CreateDXGIFactory2(flag, IID_PPV_ARGS(&factory)));
+    ComPtr<IDXGIAdapter1> hardwareAdapter;
+    GetHardwareAdapter(factory.Get(), &hardwareAdapter);
+    ThrowIfFailed(D3D12CreateDevice(
+        hardwareAdapter.Get(),
+        D3D_FEATURE_LEVEL_11_0,
+        IID_PPV_ARGS(&device)
+    ));
+    return device;
+}
+
+
+ComPtr<ID3D12CommandQueue> create_command_queue(ComPtr<ID3D12Device> device)
+{
+    ComPtr<ID3D12CommandQueue> command_queue;
+    D3D12_COMMAND_QUEUE_DESC desc{};
+    desc.Flags = D3D12_COMMAND_QUEUE_FLAG_NONE;
+    desc.Type = D3D12_COMMAND_LIST_TYPE_DIRECT;
+    ThrowIfFailed(device->CreateCommandQueue(&desc, IID_PPV_ARGS(&command_queue)));
+    return command_queue;
+}
+
+
+ComPtr<IDXGISwapChain3> create_swap_chain(HWND h, ComPtr<IDXGIFactory4> factory, ComPtr<ID3D12CommandQueue> command_queue)
+{
+    ComPtr<IDXGISwapChain3> ret_sc3;
+    DXGI_SWAP_CHAIN_DESC1 swapChainDesc = {};
+    swapChainDesc.Width = WIDTH;
+    swapChainDesc.Height = HEIGHT;
+    swapChainDesc.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+    swapChainDesc.SampleDesc.Count = 1;
+    swapChainDesc.SampleDesc.Quality = 0;
+    swapChainDesc.BufferUsage = DXGI_USAGE_RENDER_TARGET_OUTPUT;
+    swapChainDesc.BufferCount = FrameCount;
+    swapChainDesc.SwapEffect = DXGI_SWAP_EFFECT_FLIP_DISCARD;
+    swapChainDesc.Scaling = DXGI_SCALING_STRETCH;
+    swapChainDesc.AlphaMode = DXGI_ALPHA_MODE_UNSPECIFIED;
+    swapChainDesc.Flags = 0;
+    ComPtr<IDXGISwapChain1> swapChain;
+    ThrowIfFailed(factory->CreateSwapChainForHwnd(
+        command_queue.Get(),        // Swap chain needs the queue so that it can force a flush on it.
+        h,
+        &swapChainDesc,
+        nullptr,
+        nullptr,
+        &swapChain
+        ));
+    ThrowIfFailed(factory->MakeWindowAssociation(h, DXGI_MWA_NO_ALT_ENTER));    
+    ThrowIfFailed(swapChain.As(&ret_sc3));
+    return ret_sc3;
+}
+
 struct DXDevice
 {
     // Pipeline objects.
@@ -39,6 +168,7 @@ struct DXDevice
     CD3DX12_RECT m_scissorRect;
     ComPtr<IDXGISwapChain3> m_swapChain;
     ComPtr<ID3D12Device> m_device;
+    ComPtr<IDXGIFactory4> m_factory;
     ComPtr<ID3D12Resource> m_renderTargets[FrameCount];
     ComPtr<ID3D12CommandAllocator> m_commandAllocator;
     ComPtr<ID3D12CommandQueue> m_commandQueue;
@@ -77,64 +207,22 @@ struct DXDevice
 
     DXDevice(HWND h)
     {
-        // debug layer
         UINT dxgiFactoryFlags = 0;
 #if defined(_DEBUG)
-        // Enable the debug layer (requires the Graphics Tools "optional feature").
-        // NOTE: Enabling the debug layer after device creation will invalidate the active device.
-        {
-            ComPtr<ID3D12Debug> debugController;
-            if (SUCCEEDED(D3D12GetDebugInterface(IID_PPV_ARGS(&debugController))))
-            {
-                debugController->EnableDebugLayer();
-
-                // Enable additional debug layers.
-                dxgiFactoryFlags |= DXGI_CREATE_FACTORY_DEBUG;
-            }
-        }
+            enable_debug_layer(dxgiFactoryFlags);
 #endif
 
+        // factory
+        m_factory = create_factory(dxgiFactoryFlags);
+
         // device
-        ComPtr<IDXGIFactory4> factory;
-        ThrowIfFailed(CreateDXGIFactory2(dxgiFactoryFlags, IID_PPV_ARGS(&factory)));
-        ComPtr<IDXGIAdapter1> hardwareAdapter;
-        DXDevice::GetHardwareAdapter(factory.Get(), &hardwareAdapter);
-        ThrowIfFailed(D3D12CreateDevice(
-            hardwareAdapter.Get(),
-            D3D_FEATURE_LEVEL_11_0,
-            IID_PPV_ARGS(&m_device)
-            ));
+        m_device = create_device(dxgiFactoryFlags, m_factory);
 
         // command queue
-        D3D12_COMMAND_QUEUE_DESC queueDesc = {};
-        queueDesc.Flags = D3D12_COMMAND_QUEUE_FLAG_NONE;
-        queueDesc.Type = D3D12_COMMAND_LIST_TYPE_DIRECT;
-        ThrowIfFailed(m_device->CreateCommandQueue(&queueDesc, IID_PPV_ARGS(&m_commandQueue)));
+        m_commandQueue = create_command_queue(m_device);
 
         // swapchain
-        DXGI_SWAP_CHAIN_DESC1 swapChainDesc = {};
-        swapChainDesc.Width = WIDTH;
-        swapChainDesc.Height = HEIGHT;
-        swapChainDesc.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
-        swapChainDesc.SampleDesc.Count = 1;
-        swapChainDesc.SampleDesc.Quality = 0;
-        swapChainDesc.BufferUsage = DXGI_USAGE_RENDER_TARGET_OUTPUT;
-        swapChainDesc.BufferCount = FrameCount;
-        swapChainDesc.SwapEffect = DXGI_SWAP_EFFECT_FLIP_DISCARD;
-        swapChainDesc.Scaling = DXGI_SCALING_STRETCH;
-        swapChainDesc.AlphaMode = DXGI_ALPHA_MODE_UNSPECIFIED;
-        swapChainDesc.Flags = 0;
-        ComPtr<IDXGISwapChain1> swapChain;
-        ThrowIfFailed(factory->CreateSwapChainForHwnd(
-            m_commandQueue.Get(),        // Swap chain needs the queue so that it can force a flush on it.
-            h,
-            &swapChainDesc,
-            nullptr,
-            nullptr,
-            &swapChain
-            ));
-        ThrowIfFailed(factory->MakeWindowAssociation(h, DXGI_MWA_NO_ALT_ENTER));
-        ThrowIfFailed(swapChain.As(&m_swapChain));
+        m_swapChain = create_swap_chain(h, m_factory, m_commandQueue);
         m_frameIndex = m_swapChain->GetCurrentBackBufferIndex();
 
         // rtv heap
@@ -307,72 +395,8 @@ struct DXDevice
         WaitForPreviousFrame();
     }
 
-    inline static void
-    GetHardwareAdapter(
-        IDXGIFactory1 *pFactory,
-        IDXGIAdapter1 **ppAdapter,
-        bool requestHighPerformanceAdapter = true)
-    {
-        *ppAdapter = nullptr;
 
-        ComPtr<IDXGIAdapter1> adapter;
 
-        ComPtr<IDXGIFactory6> factory6;
-        if (SUCCEEDED(pFactory->QueryInterface(IID_PPV_ARGS(&factory6))))
-        {
-            for (
-                UINT adapterIndex = 0;
-                SUCCEEDED(factory6->EnumAdapterByGpuPreference(
-                    adapterIndex,
-                    requestHighPerformanceAdapter == true ? DXGI_GPU_PREFERENCE_HIGH_PERFORMANCE :
-                    DXGI_GPU_PREFERENCE_UNSPECIFIED,
-                    IID_PPV_ARGS(&adapter)));
-                ++adapterIndex)
-            {
-                DXGI_ADAPTER_DESC1 desc;
-                adapter->GetDesc1(&desc);
-
-                if (desc.Flags & DXGI_ADAPTER_FLAG_SOFTWARE)
-                {
-                    // Don't select the Basic Render Driver adapter.
-                    // If you want a software adapter, pass in "/warp" on the command line.
-                    continue;
-                }
-
-                // Check to see whether the adapter supports Direct3D 12, but don't create the
-                // actual device yet.
-                if (SUCCEEDED(D3D12CreateDevice(adapter.Get(), D3D_FEATURE_LEVEL_11_0, _uuidof(ID3D12Device), nullptr)))
-                {
-                    break;
-                }
-            }
-        }
-
-        if (adapter.Get() == nullptr)
-        {
-            for (UINT adapterIndex = 0; SUCCEEDED(pFactory->EnumAdapters1(adapterIndex, &adapter)); ++adapterIndex)
-            {
-                DXGI_ADAPTER_DESC1 desc;
-                adapter->GetDesc1(&desc);
-
-                if (desc.Flags & DXGI_ADAPTER_FLAG_SOFTWARE)
-                {
-                    // Don't select the Basic Render Driver adapter.
-                    // If you want a software adapter, pass in "/warp" on the command line.
-                    continue;
-                }
-
-                // Check to see whether the adapter supports Direct3D 12, but don't create the
-                // actual device yet.
-                if (SUCCEEDED(D3D12CreateDevice(adapter.Get(), D3D_FEATURE_LEVEL_11_0, _uuidof(ID3D12Device), nullptr)))
-                {
-                    break;
-                }
-            }
-        }
-
-        *ppAdapter = adapter.Detach();
-    }
 };
 
 
