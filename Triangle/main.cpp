@@ -161,6 +161,25 @@ ComPtr<IDXGISwapChain3> create_swap_chain(HWND h, ComPtr<IDXGIFactory4> factory,
     return ret_sc3;
 }
 
+enum class DescHeapType
+{
+    SRV_UAV_CSV,
+    DSV,
+    RTV,
+};
+
+ComPtr<ID3D12DescriptorHeap> create_descriptor_heap(ComPtr<ID3D12Device> device, UINT ct, D3D12_DESCRIPTOR_HEAP_TYPE type, bool shader_visible)
+{
+        ComPtr<ID3D12DescriptorHeap> rtv_heap;
+        D3D12_DESCRIPTOR_HEAP_DESC rtvHeapDesc{};
+        rtvHeapDesc.NumDescriptors = ct;
+        rtvHeapDesc.Type = type;
+        rtvHeapDesc.Flags = shader_visible ? D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE : D3D12_DESCRIPTOR_HEAP_FLAG_NONE;
+        // rtvHeapDesc.NodeMask = 0;
+        ThrowIfFailed(device->CreateDescriptorHeap(&rtvHeapDesc, IID_PPV_ARGS(&rtv_heap)));
+        return rtv_heap;
+}
+
 struct D3D12Context
 {
     // gloable context
@@ -225,16 +244,11 @@ struct D3D12Context
 
         // swapchain
         m_swapChain = create_swap_chain(h, m_factory, m_commandQueue);
-        m_frameIndex = m_swapChain->GetCurrentBackBufferIndex();
 
         // rtv heap
-        D3D12_DESCRIPTOR_HEAP_DESC rtvHeapDesc{};
-        rtvHeapDesc.NumDescriptors = FrameCount;
-        rtvHeapDesc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_RTV;
-        rtvHeapDesc.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_NONE;
-        // rtvHeapDesc.NodeMask = 0;
-        ThrowIfFailed(m_device->CreateDescriptorHeap(&rtvHeapDesc, IID_PPV_ARGS(&m_rtvHeap)));
-        
+        m_rtvHeap = create_descriptor_heap(m_device, FrameCount, D3D12_DESCRIPTOR_HEAP_TYPE_RTV, D3D12_DESCRIPTOR_HEAP_FLAG_NONE);
+
+        m_frameIndex = m_swapChain->GetCurrentBackBufferIndex();
         m_rtvDescriptorSize = m_device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_RTV);
 
         // frame resource
