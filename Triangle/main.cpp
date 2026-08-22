@@ -180,6 +180,25 @@ ComPtr<ID3D12DescriptorHeap> create_descriptor_heap(ComPtr<ID3D12Device> device,
         return rtv_heap;
 }
 
+struct D3D12Resource
+{
+    ComPtr<ID3D12Resource> m_resource;
+
+};
+
+struct D3D12RenderPass
+{
+    
+    void set()
+    {
+
+    }
+    void render()
+    {
+
+    }
+};
+
 struct D3D12Context
 {
     // gloable context
