@@ -161,13 +161,6 @@ ComPtr<IDXGISwapChain3> create_swap_chain(HWND h, ComPtr<IDXGIFactory4> factory,
     return ret_sc3;
 }
 
-enum class DescHeapType
-{
-    SRV_UAV_CSV,
-    DSV,
-    RTV,
-};
-
 ComPtr<ID3D12DescriptorHeap> create_descriptor_heap(ComPtr<ID3D12Device> device, UINT ct, D3D12_DESCRIPTOR_HEAP_TYPE type, bool shader_visible)
 {
         ComPtr<ID3D12DescriptorHeap> rtv_heap;

@@ -8,6 +8,7 @@ target_include_directories(LearnD3D12Headers INTERFACE
 target_sources(LearnD3D12Headers INTERFACE
         "${CMAKE_CURRENT_SOURCE_DIR}/GlfwWindow.hpp"
         "${CMAKE_CURRENT_SOURCE_DIR}/Utility.hpp"
+        "${CMAKE_CURRENT_SOURCE_DIR}/stb_image.hpp"
 )
 
 target_link_libraries(LearnD3D12Headers INTERFACE
