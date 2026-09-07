@@ -1,2 +1,3 @@
 /build/
 *.cso
+compile_commands.json
