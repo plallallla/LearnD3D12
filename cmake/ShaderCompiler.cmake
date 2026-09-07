@@ -56,3 +56,44 @@ function(compile_shader shader_name)
             PARENT_SCOPE
     )
 endfunction()
+
+function(compile_compute_shader shader_name)
+    set(options DEBUG WARNINGS_AS_ERRORS)
+    set(one_value_args CS_ENTRY CS_PROFILE)
+    cmake_parse_arguments(SHADER "${options}" "${one_value_args}" "" ${ARGN})
+
+    if (NOT SHADER_CS_ENTRY)
+        set(SHADER_CS_ENTRY CSMain)
+    endif ()
+    if (NOT SHADER_CS_PROFILE)
+        set(SHADER_CS_PROFILE cs_6_0)
+    endif ()
+
+    set(shader_flags)
+    if (SHADER_DEBUG)
+        list(APPEND shader_flags -Zi -Qembed_debug -Od)
+    else ()
+        list(APPEND shader_flags -O3)
+    endif ()
+
+    if (SHADER_WARNINGS_AS_ERRORS)
+        list(APPEND shader_flags -WX)
+    endif ()
+
+    set(shader_source "${CMAKE_CURRENT_SOURCE_DIR}/${shader_name}.hlsl")
+    set(compute_shader_output "${CMAKE_CURRENT_SOURCE_DIR}/${shader_name}_${SHADER_CS_ENTRY}.cso")
+
+    add_custom_command(
+            OUTPUT "${compute_shader_output}"
+            COMMAND "${DXC_EXECUTABLE}" -T "${SHADER_CS_PROFILE}" -E "${SHADER_CS_ENTRY}" ${shader_flags} -Fo "${compute_shader_output}" "${shader_source}"
+            DEPENDS "${shader_source}"
+            COMMENT "Compiling ${shader_name} compute shader"
+            VERBATIM
+    )
+
+    set(COMPILED_SHADER_OUTPUTS
+            ${COMPILED_SHADER_OUTPUTS}
+            "${compute_shader_output}"
+            PARENT_SCOPE
+    )
+endfunction()
