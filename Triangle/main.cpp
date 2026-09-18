@@ -173,12 +173,24 @@ ComPtr<ID3D12DescriptorHeap> create_descriptor_heap(ComPtr<ID3D12Device> device,
         return rtv_heap;
 }
 
-using Resource = ComPtr<ID3D12Resource>;
-
-struct
+struct D3D12CommandContext
 {
-}
-g_resource;
+    ComPtr<ID3D12CommandAllocator> m_commandAllocator;
+    ComPtr<ID3D12GraphicsCommandList> m_commandList;
+
+    void init(ComPtr<ID3D12Device> device)
+    {
+        ThrowIfFailed(device->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT, IID_PPV_ARGS(&m_commandAllocator)));
+        ThrowIfFailed(device->CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT, m_commandAllocator.Get(), nullptr, IID_PPV_ARGS(&m_commandList)));
+        ThrowIfFailed(m_commandList->Close());
+    }
+
+    void Reset(ComPtr<ID3D12PipelineState> pso)
+    {
+        ThrowIfFailed(m_commandAllocator->Reset());
+        ThrowIfFailed(m_commandList->Reset(m_commandAllocator.Get(), pso.Get()));
+    }
+};
 
 struct D3D12RenderPassContext
 {
@@ -199,6 +211,7 @@ struct D3D12RenderPassContext
     std::string _ps_path{"/triangle_PSMain.cso"};
     ComPtr<ID3D12Resource> _rt[2];
     D3D12_VERTEX_BUFFER_VIEW _vbv;
+    ComPtr<ID3D12Resource> m_vertexBuffer;
 
     D3D12RenderPassContext() = default;
 
@@ -245,44 +258,80 @@ struct D3D12RenderPassContext
         psoDesc.RTVFormats[0] = DXGI_FORMAT_R8G8B8A8_UNORM;
         psoDesc.SampleDesc.Count = 1;
         ThrowIfFailed(device->CreateGraphicsPipelineState(&psoDesc, IID_PPV_ARGS(&_pipeline_state_object)));
+
+        // vb
+
+                // mesh
+        auto m_aspectRatio = static_cast<float>(WIDTH) / static_cast<float>(HEIGHT);
+        Vertex triangleVertices[] =
+        {
+            { { 0.0f, 0.25f * m_aspectRatio, 0.0f }, { 1.0f, 0.0f, 0.0f, 1.0f } },
+            { { 0.25f, -0.25f * m_aspectRatio, 0.0f }, { 0.0f, 1.0f, 0.0f, 1.0f } },
+            { { -0.25f, -0.25f * m_aspectRatio, 0.0f }, { 0.0f, 0.0f, 1.0f, 1.0f } }
+        };
+
+        CD3DX12_HEAP_PROPERTIES heapProps(D3D12_HEAP_TYPE_UPLOAD);
+        auto bufferDesc = CD3DX12_RESOURCE_DESC::Buffer(sizeof(triangleVertices));
+        const UINT vertexBufferSize = sizeof(triangleVertices);
+        ThrowIfFailed(device->CreateCommittedResource(
+            &heapProps,
+            D3D12_HEAP_FLAG_NONE,
+            &bufferDesc,
+            D3D12_RESOURCE_STATE_GENERIC_READ,
+            nullptr,
+            IID_PPV_ARGS(&m_vertexBuffer)));
+
+        // Copy the triangle data to the vertex buffer.
+        UINT8* pVertexDataBegin;
+        CD3DX12_RANGE readRange(0, 0);        // We do not intend to read from this resource on the CPU.
+        ThrowIfFailed(m_vertexBuffer->Map(0, &readRange, reinterpret_cast<void**>(&pVertexDataBegin)));
+        memcpy(pVertexDataBegin, triangleVertices, sizeof(triangleVertices));
+        m_vertexBuffer->Unmap(0, nullptr);
+
+        // Initialize the vertex buffer view.
+        _vbv.BufferLocation = m_vertexBuffer->GetGPUVirtualAddress();
+        _vbv.StrideInBytes = sizeof(Vertex);
+        _vbv.SizeInBytes = vertexBufferSize;
     }
 
-    void render(ComPtr<ID3D12GraphicsCommandList> commandList, int frameIndex, ComPtr<ID3D12DescriptorHeap> m_rtvHeap, UINT m_rtvDescriptorSize)
+    void render(D3D12CommandContext& commandList, int frameIndex, ComPtr<ID3D12DescriptorHeap> m_rtvHeap, UINT m_rtvDescriptorSize)
     {
 
-
+        commandList.Reset(_pipeline_state_object);
         // Set necessary state.
-        commandList->SetGraphicsRootSignature(_root_signature.Get());
-        commandList->RSSetViewports(1, &m_viewport);
-        commandList->RSSetScissorRects(1, &m_scissorRect);
+        commandList.m_commandList->SetGraphicsRootSignature(_root_signature.Get());
+        commandList.m_commandList->RSSetViewports(1, &m_viewport);
+        commandList.m_commandList->RSSetScissorRects(1, &m_scissorRect);
 
         // Indicate that the back buffer will be used as a render target.
         const auto barrier = CD3DX12_RESOURCE_BARRIER::Transition(
             _rt[frameIndex].Get(),
             D3D12_RESOURCE_STATE_PRESENT,
             D3D12_RESOURCE_STATE_RENDER_TARGET);
-        commandList->ResourceBarrier(1, &barrier);
+        commandList.m_commandList->ResourceBarrier(1, &barrier);
 
         CD3DX12_CPU_DESCRIPTOR_HANDLE rtvHandle{m_rtvHeap->GetCPUDescriptorHandleForHeapStart(), (INT)frameIndex, m_rtvDescriptorSize};
-        commandList->OMSetRenderTargets(1, &rtvHandle, FALSE, nullptr);
+        commandList.m_commandList->OMSetRenderTargets(1, &rtvHandle, FALSE, nullptr);
 
         // Record commands.
         const float clearColor[] = { 0.0f, 0.2f, 0.4f, 1.0f };
-        commandList->ClearRenderTargetView(rtvHandle, clearColor, 0, nullptr);
-        commandList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
-        commandList->IASetVertexBuffers(0, 1, &_vbv);
-        commandList->DrawInstanced(3, 1, 0, 0);
+        commandList.m_commandList->ClearRenderTargetView(rtvHandle, clearColor, 0, nullptr);
+        commandList.m_commandList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+        commandList.m_commandList->IASetVertexBuffers(0, 1, &_vbv);
+        commandList.m_commandList->DrawInstanced(3, 1, 0, 0);
 
         // Indicate that the back buffer will now be used to present.
         const auto barrier2 = CD3DX12_RESOURCE_BARRIER::Transition(
             _rt[frameIndex].Get(),
             D3D12_RESOURCE_STATE_RENDER_TARGET,
             D3D12_RESOURCE_STATE_PRESENT);
-        commandList->ResourceBarrier(1, &barrier2);
+        commandList.m_commandList->ResourceBarrier(1, &barrier2);
 
-        ThrowIfFailed(commandList->Close());
+        ThrowIfFailed(commandList.m_commandList->Close());
     }
 };
+
+
 
 
 struct D3D12DeviceContext
@@ -322,6 +371,8 @@ struct D3D12DeviceContext
     }
     _frame_resource;
 
+    D3D12CommandContext _command_context;
+
 
     D3D12DeviceContext() = default;
 
@@ -331,11 +382,6 @@ struct D3D12DeviceContext
     UINT m_rtvDescriptorSize;
     ComPtr<ID3D12CommandAllocator> m_commandAllocator;
     ComPtr<ID3D12CommandQueue> m_commandQueue;
-
-    // pipeline
-    ComPtr<ID3D12RootSignature> m_rootSignature;
-    ComPtr<ID3D12PipelineState> m_pipelineState;
-    ComPtr<ID3D12GraphicsCommandList> m_commandList;
     
     // App resources.
     ComPtr<ID3D12Resource> m_vertexBuffer;
@@ -345,6 +391,7 @@ struct D3D12DeviceContext
     HANDLE m_fenceEvent;
     ComPtr<ID3D12Fence> m_fence;
     UINT64 m_fenceValue;
+
 
     void sync()
     {
@@ -385,8 +432,7 @@ struct D3D12DeviceContext
         ThrowIfFailed(m_device->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT, IID_PPV_ARGS(&m_commandAllocator)));
 
         // command list.
-        ThrowIfFailed(m_device->CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT, m_commandAllocator.Get(), m_pipelineState.Get(), IID_PPV_ARGS(&m_commandList)));
-        ThrowIfFailed(m_commandList->Close());
+        _command_context.init(m_device);
 
         // mesh
         auto m_aspectRatio = static_cast<float>(WIDTH) / static_cast<float>(HEIGHT);
@@ -433,27 +479,22 @@ struct D3D12DeviceContext
 
     }
 
-    void populate_command_list()
+    void begin_frame()
     {
-        // Command list allocators can only be reset when the associated command lists have finished execution on the GPU; apps should use fences to determine GPU execution progress.
         ThrowIfFailed(m_commandAllocator->Reset());
-
-        // However, when ExecuteCommandList() is called on a particular command list, that command list can then be reset at any time and must be before re-recording.
-        ThrowIfFailed(m_commandList->Reset(m_commandAllocator.Get(), m_pipelineState.Get()));
     }
 
     void render()
     {
-        populate_command_list();
-
         // Execute the command list.
-        ID3D12CommandList* ppCommandLists[] = { m_commandList.Get() };
+        ID3D12CommandList* ppCommandLists[] = { _command_context.m_commandList.Get() };
         m_commandQueue->ExecuteCommandLists(_countof(ppCommandLists), ppCommandLists);
+    }
 
-        // Present the frame.
+    void end_frame()
+    {
         ThrowIfFailed(_frame_resource.m_swapChain->Present(1, 0));
-
-        // WaitForPreviousFrame();
+        sync();
     }
 };
 
@@ -468,8 +509,10 @@ struct D3D12Render
     }
     void render()
     {
+        _device_context.begin_frame();
+        _triangle_pass_context.render(_device_context._command_context, _device_context._frame_resource.m_frameIndex, _device_context._frame_resource.m_rtvHeap, _device_context.m_rtvDescriptorSize);
         _device_context.render();
-        _triangle_pass_context.render(_device_context.m_commandList, _device_context._frame_resource.m_frameIndex, _device_context._frame_resource.m_rtvHeap, _device_context.m_rtvDescriptorSize);
+        _device_context.end_frame();
     }
 };
 
