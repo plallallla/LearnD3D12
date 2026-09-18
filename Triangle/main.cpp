@@ -173,15 +173,15 @@ ComPtr<ID3D12DescriptorHeap> create_descriptor_heap(ComPtr<ID3D12Device> device,
         return rtv_heap;
 }
 
-struct D3D12Resource
-{
-    ComPtr<ID3D12Resource> m_resource;
+using Resource = ComPtr<ID3D12Resource>;
 
-};
+struct
+{
+}
+g_resource;
 
 struct D3D12RenderPassContext
 {
-
     // viewport
     CD3DX12_VIEWPORT m_viewport;
     CD3DX12_RECT m_scissorRect;
@@ -197,13 +197,15 @@ struct D3D12RenderPassContext
     // shader
     std::string _vs_path{"/triangle_VSMain.cso"};
     std::string _ps_path{"/triangle_PSMain.cso"};
+    ComPtr<ID3D12Resource> _rt[2];
+    D3D12_VERTEX_BUFFER_VIEW _vbv;
 
     D3D12RenderPassContext() = default;
 
     void init(ComPtr<ID3D12Device> device)
     {
 
-        // viewport
+        // viewport & scissor rect
         m_viewport = CD3DX12_VIEWPORT(0.0f, 0.0f, static_cast<float>(WIDTH), static_cast<float>(HEIGHT));
         m_scissorRect = CD3DX12_RECT(0, 0, WIDTH, HEIGHT);
 
@@ -245,7 +247,7 @@ struct D3D12RenderPassContext
         ThrowIfFailed(device->CreateGraphicsPipelineState(&psoDesc, IID_PPV_ARGS(&_pipeline_state_object)));
     }
 
-    void render(ComPtr<ID3D12GraphicsCommandList> commandList)
+    void render(ComPtr<ID3D12GraphicsCommandList> commandList, int frameIndex, ComPtr<ID3D12DescriptorHeap> m_rtvHeap, UINT m_rtvDescriptorSize)
     {
 
 
@@ -256,24 +258,24 @@ struct D3D12RenderPassContext
 
         // Indicate that the back buffer will be used as a render target.
         const auto barrier = CD3DX12_RESOURCE_BARRIER::Transition(
-            m_renderTargets[m_frameIndex].Get(),
+            _rt[frameIndex].Get(),
             D3D12_RESOURCE_STATE_PRESENT,
             D3D12_RESOURCE_STATE_RENDER_TARGET);
         commandList->ResourceBarrier(1, &barrier);
 
-        CD3DX12_CPU_DESCRIPTOR_HANDLE rtvHandle{m_rtvHeap->GetCPUDescriptorHandleForHeapStart(), (INT)m_frameIndex, m_rtvDescriptorSize};
+        CD3DX12_CPU_DESCRIPTOR_HANDLE rtvHandle{m_rtvHeap->GetCPUDescriptorHandleForHeapStart(), (INT)frameIndex, m_rtvDescriptorSize};
         commandList->OMSetRenderTargets(1, &rtvHandle, FALSE, nullptr);
 
         // Record commands.
         const float clearColor[] = { 0.0f, 0.2f, 0.4f, 1.0f };
         commandList->ClearRenderTargetView(rtvHandle, clearColor, 0, nullptr);
         commandList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
-        commandList->IASetVertexBuffers(0, 1, &m_vertexBufferView);
+        commandList->IASetVertexBuffers(0, 1, &_vbv);
         commandList->DrawInstanced(3, 1, 0, 0);
 
         // Indicate that the back buffer will now be used to present.
         const auto barrier2 = CD3DX12_RESOURCE_BARRIER::Transition(
-            m_renderTargets[m_frameIndex].Get(),
+            _rt[frameIndex].Get(),
             D3D12_RESOURCE_STATE_RENDER_TARGET,
             D3D12_RESOURCE_STATE_PRESENT);
         commandList->ResourceBarrier(1, &barrier2);
@@ -285,6 +287,41 @@ struct D3D12RenderPassContext
 
 struct D3D12DeviceContext
 {
+
+    struct
+    {
+        UINT m_frameIndex;
+        ComPtr<ID3D12Resource> m_renderTargets[FrameCount];
+        ComPtr<IDXGISwapChain3> m_swapChain;
+        // memory
+        ComPtr<ID3D12DescriptorHeap> m_rtvHeap;
+        void init(D3D12DeviceContext& device_context, HWND h)
+        {
+            // swapchain
+            m_swapChain = create_swap_chain(h, device_context.m_factory, device_context.m_commandQueue);
+
+            // rtv heap
+            m_rtvHeap = create_descriptor_heap(device_context.m_device, FrameCount, D3D12_DESCRIPTOR_HEAP_TYPE_RTV, D3D12_DESCRIPTOR_HEAP_FLAG_NONE);
+
+            m_frameIndex = m_swapChain->GetCurrentBackBufferIndex();
+
+            // frame resource
+            CD3DX12_CPU_DESCRIPTOR_HANDLE rtvHandle{m_rtvHeap->GetCPUDescriptorHandleForHeapStart()};
+            for (UINT n = 0; n < FrameCount; ++n)
+            {
+                ThrowIfFailed(m_swapChain->GetBuffer(n, IID_PPV_ARGS(&m_renderTargets[n])));
+                device_context.m_device->CreateRenderTargetView(m_renderTargets[n].Get(), nullptr, rtvHandle);
+                rtvHandle.Offset(1, device_context.m_rtvDescriptorSize);
+            }
+        }
+
+        void sync_frame_index()
+        {
+            m_frameIndex = m_swapChain->GetCurrentBackBufferIndex();
+        }
+    }
+    _frame_resource;
+
 
     D3D12DeviceContext() = default;
 
@@ -342,6 +379,7 @@ struct D3D12DeviceContext
 
         m_rtvDescriptorSize = m_device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_RTV);
 
+        _frame_resource.init(*this, h);
 
         // command allocator
         ThrowIfFailed(m_device->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT, IID_PPV_ARGS(&m_commandAllocator)));
@@ -391,7 +429,7 @@ struct D3D12DeviceContext
         {
             ThrowIfFailed(HRESULT_FROM_WIN32(GetLastError()));
         }
-        WaitForPreviousFrame();
+        // WaitForPreviousFrame();
 
     }
 
@@ -413,50 +451,11 @@ struct D3D12DeviceContext
         m_commandQueue->ExecuteCommandLists(_countof(ppCommandLists), ppCommandLists);
 
         // Present the frame.
-        ThrowIfFailed(m_swapChain->Present(1, 0));
+        ThrowIfFailed(_frame_resource.m_swapChain->Present(1, 0));
 
-        WaitForPreviousFrame();
-    }
-
-
-
-};
-
-struct D3D12FrameResource
-{
-    UINT m_frameIndex;
-    ComPtr<ID3D12Resource> m_renderTargets[FrameCount];
-    ComPtr<IDXGISwapChain3> m_swapChain;
-    // memory
-    ComPtr<ID3D12DescriptorHeap> m_rtvHeap;
-    void init(D3D12DeviceContext& device_context, HWND h)
-    {
-        // swapchain
-        m_swapChain = create_swap_chain(h, device_context.m_factory, device_context.m_commandQueue);
-
-        // rtv heap
-        m_rtvHeap = create_descriptor_heap(device_context.m_device, FrameCount, D3D12_DESCRIPTOR_HEAP_TYPE_RTV, D3D12_DESCRIPTOR_HEAP_FLAG_NONE);
-
-        m_frameIndex = m_swapChain->GetCurrentBackBufferIndex();
-
-        // frame resource
-        CD3DX12_CPU_DESCRIPTOR_HANDLE rtvHandle{m_rtvHeap->GetCPUDescriptorHandleForHeapStart()};
-        for (UINT n = 0; n < FrameCount; ++n)
-        {
-            ThrowIfFailed(m_swapChain->GetBuffer(n, IID_PPV_ARGS(&m_renderTargets[n])));
-            device_context.m_device->CreateRenderTargetView(m_renderTargets[n].Get(), nullptr, rtvHandle);
-            rtvHandle.Offset(1, device_context.m_rtvDescriptorSize);
-        }
-    }
-
-    void sync_frame_index()
-    {
-        m_frameIndex = m_swapChain->GetCurrentBackBufferIndex();
+        // WaitForPreviousFrame();
     }
 };
-
-
-
 
 struct D3D12Render
 {
@@ -465,11 +464,12 @@ struct D3D12Render
     void init(HWND h)
     {
         _device_context.init(h);
-        _triangle_pass_context.init();
+        _triangle_pass_context.init(_device_context.m_device);
     }
     void render()
     {
         _device_context.render();
+        _triangle_pass_context.render(_device_context.m_commandList, _device_context._frame_resource.m_frameIndex, _device_context._frame_resource.m_rtvHeap, _device_context.m_rtvDescriptorSize);
     }
 };
 
